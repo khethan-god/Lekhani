@@ -28,12 +28,14 @@ The original text editior called `kilo` was [originally written](https://github.
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-# To be included in the text editor in the about icon or box
+# To be included in the text editor in the about icon or box, example
+    Lekhani --version
 
-    Lekhani  Copyright (C) 2025 Khethan R G
-    This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
+    Lekhani 1.0.0
+    Copyright (C) 2025 Khethan R G
+    This is a free software. This program comes with ABSOLUTELY NO WARRANTY;
+    not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
     This is free software, and you are welcome to redistribute it
-    under certain conditions; type `show c' for details.
-
+    under GNU General public license v3.0.
 
 -->
