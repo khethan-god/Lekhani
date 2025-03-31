@@ -1,12 +1,4 @@
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <termios.h>
-
 /*
- *
  *  Lekhani: A text editor
  *  Copyright (C) 2025  Khethan R G
  *
@@ -17,55 +9,162 @@
  * 
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *  https://github.com/khethan-god/Lekhani/blob/main/LICENSE for full details.
-*/
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program. If not, see https://www.gnu.org/licenses/.
+ * 
+ *  Full license: https://github.com/khethan-god/Lekhani/blob/main/LICENSE
+ */
 
-struct termios orig_termios;
+#include <ctype.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <termios.h>
+#include <stdbool.h>
 
-void disableRawMode() {
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
-    // restore the original terminal attributes
+/*** Constants ***/
+static const char *VERSION = "1.0.0";
+static const char *AUTHOR = "Khethan R G";
+static const char *LICENSE_URL = "https://github.com/khethan-god/Lekhani/blob/main/LICENSE";
+
+/*** Global Data ***/
+static struct termios orig_termios;
+
+/*** Error Handling ***/
+
+/*
+ * Prints an error message to stderr and exits with failure status.
+ * Args:
+ *   msg - The error message to display before the system error description.
+ */
+static void die(const char *msg) {
+    perror(msg);
+    exit(1);
 }
 
-void print_version() {
-    printf("Lekhani v1.0.0 Copyright (C) 2025 Khethan R G\n");
-    printf("This is a free software. This program comes with ABSOLUTELY NO WARRANTY;\n");
+/*** Terminal Functions ***/
+
+/*
+ * Restores the terminal to its original settings.
+ * Disables raw mode by resetting the terminal attributes to their saved state.
+ */
+static void disableRawMode(void) {
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1) {
+        die("tcsetattr");
+    }
+}
+
+/*
+ * Configures the terminal to raw mode for character-by-character input.
+ * Saves original terminal settings and disables canonical mode, echo, and signals.
+ */
+static void enableRawMode(void) {
+    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) {
+        die("tcgetattr");
+    }
+    
+    atexit(disableRawMode);
+    
+    struct termios raw = orig_termios;
+    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= ~(OPOST);
+    raw.c_cflag |= (CS8);
+    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 1;
+    
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) {
+        die("tcsetattr");
+    }
+}
+
+/*** Version Display ***/
+
+/*
+ * Prints the program's version, copyright, and licensing information.
+ */
+static void printVersion(void) {
+    printf("Lekhani v%s Copyright (C) 2025 %s\n", VERSION, AUTHOR);
+    printf("This is free software. This program comes with ABSOLUTELY NO WARRANTY;\n");
     printf("not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n");
     printf("You are welcome to redistribute it under GNU GPL v3\n");
-    printf("Full license: https://github.com/khethan-god/Lekhani/blob/main/LICENSE \n");
+    printf("Full license: %s\n", LICENSE_URL);
 }
 
-int version(int argc, char *argv[]) {
-    if (argc > 1 && strcmp(argv[1], "--version") == 0) print_version();
-    return 0;
-}
-
-void enableRawMode() {
-    // we will use this function to enable raw mode in the terminal
-    // which will allow us to send every key press to the program 
-    // without waiting for the enter key
-    tcgetattr(STDIN_FILENO, &orig_termios);  // taking the original terminal attributes
-    atexit(disableRawMode);  // this is called when the program exits automatically
-    struct termios raw = orig_termios;
-    raw.c_lflag &= ~(ECHO | ICANON); // this line disables printing of the input (key press) in the terminal, and turns off canonical mode -> reading i/p byte-by-byte instead of line-by-line
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-    // TCSAFLUSH: flush the input buffer and set the new attributes
-}
-
-int main(int argc, char *argv[]) {
-    version(argc, argv);
-    enableRawMode();
-
-    int i;
-    char c;
-    while (read(STDIN_FILENO, &c, 1) == 1 && c!='q') // `q` -> quit
-    {
-        if (iscntrl(c)) printf("%d\n", c);
-        else printf("%d ('%c')\n", c, c);
-        // iscntrl: check if the character is a control character
-        // isprint: check if the character is a printable character
+/*
+ * Checks if the command-line arguments include a version flag.
+ * Args:
+ *   argc - Number of command-line arguments.
+ *   argv - Array of command-line argument strings.
+ * Returns:
+ *   true if "--version" or "-v" is present (and prints version), false otherwise.
+ */
+static bool checkVersionFlag(int argc, char *argv[]) {
+    if (argc < 2) {
+        return false;
     }
-    printf("Read %d characters from stdin\n", i);
+    
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
+        printVersion();
+        return true;
+    }
+    return false;
+}
+
+/*** Main Editor Loop ***/
+
+/*
+ * Runs the main editor loop, reading and displaying input characters.
+ * Exits when 'q' is pressed and reports the total characters read.
+ */
+static void editorLoop(void) {
+    int char_count = 0;
+    char input;
+    
+    while (true) {
+        input = '\0';
+        if (read(STDIN_FILENO, &input, 1) == -1 && errno != EAGAIN) {
+            die("read");
+        }
+        
+        char_count++;
+        
+        if (iscntrl(input)) {
+            printf("%d\r\n", input);
+        } else {
+            printf("%d ('%c')\r\n", input, input);
+        }
+        
+        if (input == 'q') {
+            break;
+        }
+    }
+    
+    printf("Read %d characters from stdin\r\n", char_count);
+}
+
+/*** Entry Point ***/
+
+/*
+ * Main function: initializes the program and starts the editor.
+ * Args:
+ *   argc - Number of command-line arguments.
+ *   argv - Array of command-line argument strings.
+ * Returns:
+ *   0 on successful execution.
+ */
+int main(int argc, char *argv[]) {
+    if (checkVersionFlag(argc, argv)) {
+        return 0;
+    }
+    
+    enableRawMode();
+    editorLoop();
+    
     return 0;
 }
