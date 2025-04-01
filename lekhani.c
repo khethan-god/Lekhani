@@ -29,54 +29,62 @@
 #include <sys/ioctl.h>
 
 /*** Constants ***/
-static const char *VERSION = "1.0.0";
+static const char *VERSION = "0.0.1";
 static const char *AUTHOR = "Khethan R G";
 static const char *LICENSE_URL = "https://github.com/khethan-god/Lekhani/blob/main/LICENSE";
 
-/* 
- * Macros
- */
+/*** Macros ***/
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define ABUF_INIT {NULL, 0}
 
-/*** Global Data ***/
-struct editorConfig {
-    int screenRows;
-    int screenCols;
-    struct termios orig_termios;
+/*** Enums ***/
+enum editorKey {
+    ARROW_LEFT = 1000,
+    ARROW_RIGHT,
+    ARROW_UP,
+    ARROW_DOWN,
+    DEL_KEY,
+    HOME_KEY,
+    END_KEY,
+    PAGE_UP,
+    PAGE_DOWN
 };
 
-static struct editorConfig E;
-
-// It is normally not good practice to write every character to the screen ( which is happening in the draw cursor function), so we are going to create a buffer and append all the characters to the buffer and then write the entire buffer to the screen at once, this is called double buffering, and it is used to reduce flickering and improve performance.
-// We will create a dynamic array to perform this operation
-
-/*** Append Buffer ***/
+/*** Data Structures ***/
+struct editorConfig {
+    int cx, cy;         // Cursor position
+    int screenRows;     // Number of rows in the terminal
+    int screenCols;     // Number of columns in the terminal
+    struct termios orig_termios; // Original terminal settings
+};
 
 struct abuf {
-    char *b;
-    int len;
+    char *b;            // Buffer data
+    int len;            // Buffer length
 };
 
+/*** Global Data ***/
+static struct editorConfig E;
+
+/*** Append Buffer Functions ***/
+
 /*
- * Appends a string to the buffer.
+ * Appends a string to the append buffer.
  * Args:
  *   ab - Pointer to the append buffer.
  *   s - String to append.
  *   len - Length of the string to append.
  */
-static void abAppend(struct abuf *ab, const char *s, int len){
+static void abAppend(struct abuf *ab, const char *s, int len) {
     char *new = realloc(ab->b, ab->len + len);
-    if (new ==NULL) return;
+    if (new == NULL) return;
     memcpy(&new[ab->len], s, len);
     ab->b = new;
     ab->len += len;
 }
 
 /*
- * Clears the buffer by freeing the allocated memory. No need to free the len as it
- * is a primitive type and will be automatically freed when the buffer is freed.
- * This function is used to free the memory allocated for the buffer when it is no longer needed.
+ * Frees the memory allocated for the append buffer.
  * Args:
  *   ab - Pointer to the append buffer.
  */
@@ -84,19 +92,19 @@ static void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
-
 /*** Error Handling ***/
 
 /*
  * Prints an error message to stderr and exits with failure status.
+ * Clears the screen before exiting for a clean termination.
  * Args:
  *   msg - The error message to display before the system error description.
  */
 static void die(const char *msg) {
-    write(STDOUT_FILENO, "\x1b[2J", 4);
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    write(STDOUT_FILENO, "\x1b[2J", 4); // Clear screen
+    write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
     perror(msg);
-    exit(1);
+    exit(EXIT_FAILURE);
 }
 
 /*** Terminal Functions ***/
@@ -128,7 +136,7 @@ static void enableRawMode(void) {
     raw.c_cflag |= (CS8);
     raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
     raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 1;
+    raw.c_cc[VTIME] = 0.1; // 0.1 seconds timeout for read
     
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) {
         die("tcsetattr");
@@ -136,37 +144,71 @@ static void enableRawMode(void) {
 }
 
 /*
- * Reads a single character from standard input.
- * Blocks until a character is available, then returns it.
- * Since control characters are disabled, no need to check for special cases
- * using iscntrl().
+ * Reads a single keypress from the terminal, handling escape sequences.
  * Returns:
- *   The character read from standard input.
+ *   The key code (e.g., a character or an enum value like ARROW_UP).
  */
-static char editorReadKey() {
-    int nread;
+
+static int editorReadKey(void) {
     char c;
-    
+    int nread;
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
-        if (nread == -1 && errno != EAGAIN) {
-            die("read");
-        }
+        if (nread == -1 && errno != EAGAIN) die("read");
     }
-    
-    return c;
+
+    // Handle escape sequences (e.g., arrow keys)
+    if (c == '\x1b') {
+        char seq[3] = {0};
+        
+        // Read next two bytes if available, timeout otherwise
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+
+        // Parse ANSI escape codes
+        if (seq[0] == '[') {
+            // Handle sequences like "[3~" (DEL), "[5~" (PAGE_UP), etc.
+            if (seq[1] >= '0' && seq[1] <= '9') {
+                if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
+                if (seq[2] == '~') {
+                    switch (seq[1]) {
+                        case '1': return HOME_KEY;
+                        case '3': return DEL_KEY;   // DEL key; currently does nothing
+                        case '4': return END_KEY;
+                        case '5': return PAGE_UP;
+                        case '6': return PAGE_DOWN;
+                        case '7': return HOME_KEY;
+                        case '8': return END_KEY;
+                    }
+                }
+            } else {
+                switch (seq[1]) {
+                    case 'A': return ARROW_UP;
+                    case 'B': return ARROW_DOWN;
+                    case 'C': return ARROW_RIGHT;
+                    case 'D': return ARROW_LEFT;
+                    case 'H': return HOME_KEY;
+                    case 'F': return END_KEY;
+                }
+            }
+        } else if (seq[0] == 'O') {
+            switch (seq[1]) {
+                case 'H': return HOME_KEY;
+                case 'F': return END_KEY;
+            }
+        }
+        return '\x1b'; // Unrecognized escape sequence
+    }
+    return c; // Regular character
 }
 
 /*
- * Gets the current cursor position in the terminal using the n command to query the terminal for status information (6 -> returns the cursor position), then use this information to determine the current row and column position of the cursor.
- * This is done by sending the escape sequence "\x1b[6n" to the terminal, which requests the cursor position.
- * The terminal responds with a string in the format "\x1b[<rows>;<cols>R", where <rows> and <cols> are the current row and column positions, respectively.
+ * Queries the terminal for the cursor position using the `n` command
  * Args:
- *   rows - Pointer to store the current row position.
- *   cols - Pointer to store the current column position.
+ *   rows - Pointer to store the row number.
+ *   cols - Pointer to store the column number.
  * Returns:
- *   -1 on success or failure.
+ *   0 on success, -1 on failure.
  */
-
 static int getCursorPosition(int *rows, int *cols) {
     char buf[32];
     unsigned int i = 0;
@@ -187,33 +229,23 @@ static int getCursorPosition(int *rows, int *cols) {
 }
 
 /*
- * Gets the size of the terminal window.
+ * Retrieves the terminal window size.
+ * Uses ioctl if available, falls back to cursor positioning method.
  * Args:
  *   rows - Pointer to store the number of rows.
  *   cols - Pointer to store the number of columns.
- * 
- * since this function is uses pointers, the address of the rows and cols need
- * not be passed, we can just dereference the pointers and assign the values,
- * 
- * sometimes ioctl() may fail and not return the exact number of rows and cols,
- * like it might be one less, or it might start from 0 (a line exactly above the
- * first line) not displayed in the terminal, so we are going to manually calculate
- * the window size as well by moving the cursor to the bottom-right corner of the
- * terminal and querying the position of the cursor. 
- * 
+ * Returns:
+ *   0 on success, -1 on failure.
  */
 static int getWindowSize(int *rows, int *cols) {
     struct winsize ws;
-
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
         if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
         return getCursorPosition(rows, cols);
     }
-    else {
-        *cols = ws.ws_col;
-        *rows = ws.ws_row;
-        return 0;
-    }
+    *rows = ws.ws_row;
+    *cols = ws.ws_col;
+    return 0;
 }
 
 /*** Version Display ***/
@@ -238,10 +270,7 @@ static void printVersion(void) {
  *   true if "--version" or "-v" is present (and prints version), false otherwise.
  */
 static bool checkVersionFlag(int argc, char *argv[]) {
-    if (argc < 2) {
-        return false;
-    }
-    
+    if (argc < 2) return false;
     if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
         printVersion();
         return true;
@@ -249,73 +278,85 @@ static bool checkVersionFlag(int argc, char *argv[]) {
     return false;
 }
 
-/*** Main Editor Loop ***/
-
-/*** Output ***/
-
+/*** Output functions ***/
 
 /*
- * Draws the rows of the editor.
- * This function uses a dynamic array to first store all the tilde characters and then
- * prints them to the screen at once.
+ * Draws the editor rows with tildes and a welcome message.
+ * Args:
+ *   ab - Pointer to the append buffer to store the output.
  */
 static void editorDrawRows(struct abuf *ab) {
-    // this function is used to draw ~ characters in the first column of the editor
-    int y;
-    for (y = 0; y < E.screenRows; y++) {
-        abAppend(ab, "~", 1);
-        abAppend(ab, "\x1b[k", 3); // clear the line from the cursor to the end of the line
-
+    for (int y = 0; y < E.screenRows; y++) {
+        if (y == E.screenRows / 3) {
+            char welcome[80];
+            int welcomelen = snprintf(welcome, sizeof(welcome),
+                                     "Lekhani editor -- version %s", VERSION);
+            if (welcomelen > E.screenCols) welcomelen = E.screenCols;
+            int padding = (E.screenCols - welcomelen) / 2;
+            if (padding) {
+                abAppend(ab, "~", 1);
+                padding--;
+            }
+            while (padding--) abAppend(ab, " ", 1);
+            abAppend(ab, welcome, welcomelen);
+        } else {
+            abAppend(ab, "~", 1);
+        }
+        abAppend(ab, "\x1b[K", 3); // Clear line from cursor to end
         if (y < E.screenRows - 1) {
-            abAppend(ab, "\r\n", 2); // this makes sure that the last line
-            // in the editor is not followed by a new line, so the entire screen
-            // has tilde characters
+            abAppend(ab, "\r\n", 2);
         }
     }
 }
 
-void editorRefreshScreen() {
-    // screen refresh logic is used to render the editor's UI to the screen
-    // after each keypress
-    // 0. create a buffer to store the output
+/*
+ * Refreshes the editor screen by drawing rows and updating cursor position.
+ */
+static void editorRefreshScreen(void) {
     struct abuf ab = ABUF_INIT;
 
-    abAppend(&ab, "\x1b[?25l", 6); // hide the cursor. Why? sometimes the cursor might be
-    // blinking when we are writing the arrows on the screen which is not how an editor 
-    // should behave, so we are going to hide the cursor and then show it again when we are
-    // done drawing the screen.
-
-
-    // 1. clear the screen
-    // \x1b[2J clear screen and send cursor to home position.
-    // \x1b[H send cursor to cursor home position.
-    // <esc>[1J would clear the screen upto the cursor position.
-    // <esc?[0J would clear the screen from the cursor upto the end of the screen.
-    // abAppend(&ab, "\x1b[2J", 4);  // clears the screen by moving any text to the top
-    // But we are not going to use this because it is more optimal to clear
-    // each line as we redraw it. (done in editor Draw Rows).
-    // 2. move the cursor to the top-left corner
-    abAppend(&ab, "\x1b[H", 3);
-    // 3. draw the rows
+    abAppend(&ab, "\x1b[?25l", 6); // Hide cursor
+    abAppend(&ab, "\x1b[H", 3);    // Move cursor to top-left
     editorDrawRows(&ab);
-    // 4. move the cursor to the top-left corner
-    abAppend(&ab, "\x1b[H", 3);
 
-    abAppend(&ab, "\x1b[?25h", 6); // show the cursor again
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    abAppend(&ab, buf, strlen(buf)); // Move cursor to current position
 
-    write(STDOUT_FILENO, ab.b, ab.len); // write the buffer to the screen
-    // 5. flush the output
-    abFree(&ab); // free the buffer
+    abAppend(&ab, "\x1b[?25h", 6); // Show cursor
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
 }
 
-/*** Input: This section maps keys to editor functions ***/
+/*** Input Functions ***/
 
 /*
- * Runs within the main editor loop, reading input characters.
- * Exits when 'CTRL + q' is pressed.
+ * Moves the cursor based on the given key.
+ * Args:
+ *   key - The key code (e.g., ARROW_LEFT) to process.
+ */
+static void editorMoveCursor(int key) {
+    switch (key) {
+        case ARROW_LEFT:
+            if (E.cx > 0) E.cx--;
+            break;
+        case ARROW_RIGHT:
+            if (E.cx < E.screenCols - 1) E.cx++;
+            break;
+        case ARROW_UP:
+            if (E.cy > 0) E.cy--;
+            break;
+        case ARROW_DOWN:
+            if (E.cy < E.screenRows - 1) E.cy++;
+            break;
+    }
+}
+
+/*
+ * Processes a single keypress and updates editor state.
  */
 static void editorProcessKeyPress() {
-    char c = editorReadKey();
+    int c = editorReadKey();
 
     switch (c) {
         case CTRL_KEY('q'):
@@ -323,15 +364,38 @@ static void editorProcessKeyPress() {
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
             break;
+        case HOME_KEY:  // moves cursor to left edge of the screen
+            E.cx = 0;
+            break; 
+        case END_KEY:   // moves cursor to right edge of the screen
+            E.cx = E.screenCols - 1;
+            break; 
+        case PAGE_UP:
+        case PAGE_DOWN:
+            {
+                int times = E.screenRows;
+                while (times--) {
+                    editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+                }
+            }
+            break;
+        case ARROW_UP:
+        case ARROW_DOWN:
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+            editorMoveCursor(c);
+            break;
     }
 }
 
-/*** Initialize ***/
+/*** Initialization ***/
 
 /*
- * Uses getWindowSize to set the screenRows and screenCols in the editorConfig struct.
+ * Initializes the editor configuration with screen size and cursor position.
  */
-static void initEditor() {
+static void initEditor(void) {
+    E.cx = 1;
+    E.cy = 0;
     if (getWindowSize(&E.screenRows, &E.screenCols) == -1) {
         die("getWindowSize");
     }
@@ -340,24 +404,24 @@ static void initEditor() {
 /*** Entry Point ***/
 
 /*
- * Main function: initializes the program and starts the editor.
+ * Main function: initializes and runs the editor.
  * Args:
  *   argc - Number of command-line arguments.
- *   argv - Array of command-line argument strings.
+ *   argv - Array of argument strings.
  * Returns:
- *   0 on successful execution.
+ *   EXIT_SUCCESS on successful execution.
  */
 int main(int argc, char *argv[]) {
     if (checkVersionFlag(argc, argv)) {
-        return 0;
+        return EXIT_SUCCESS;
     }
-    
+
     enableRawMode();
     initEditor();
-    while (1) {
+    while (true) {
         editorRefreshScreen();
         editorProcessKeyPress();
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
